@@ -12,6 +12,7 @@ import (
 const (
 	// defaultTTL is the default TTL value in returned DNS records in seconds.
 	defaultTTL = 120
+	AllServiceName = "_services._dns-sd._udp."
 )
 
 // Zone is the interface used to integrate with the server and
@@ -23,14 +24,14 @@ type Zone interface {
 
 // MDNSService is used to export a named service by implementing a Zone
 type MDNSService struct {
-	Instance string   // Instance name (e.g. "hostService name")
-	Service  string   // Service name (e.g. "_http._tcp.")
-	Domain   string   // If blank, assumes "local"
-	HostName string   // Host machine DNS name (e.g. "mymachine.net.")
-	Port     int      // Service Port
-	IPs      []net.IP // IP addresses for the service's host
-	TXT      []string // Service TXT records
-
+	Instance     string   // Instance name (e.g. "hostService name")
+	Service      string   // Service name (e.g. "_http._tcp.")
+	Domain       string   // If blank, assumes "local"
+	HostName     string   // Host machine DNS name (e.g. "mymachine.net.")
+	Port         int      // Service Port
+	IPs          []net.IP // IP addresses for the service's host
+	TXT          []string // Service TXT records
+	TTL          uint32
 	serviceAddr  string // Fully qualified service address
 	instanceAddr string // Fully qualified instance address
 	enumAddr     string // _services._dns-sd._udp.<domain>
@@ -95,13 +96,13 @@ func NewMDNSService(instance, service, domain, hostName string, port int, ips []
 
 	if len(ips) == 0 {
 		var err error
-		ips, err = net.LookupIP(hostName)
+		ips, err = net.LookupIP(trimDot(hostName))
 		if err != nil {
 			// Try appending the host domain suffix and lookup again
 			// (required for Linux-based hosts)
 			tmpHostName := fmt.Sprintf("%s%s", hostName, domain)
 
-			ips, err = net.LookupIP(tmpHostName)
+			ips, err = net.LookupIP(trimDot(tmpHostName))
 
 			if err != nil {
 				return nil, fmt.Errorf("could not determine host IP addresses for %s", hostName)
@@ -122,9 +123,10 @@ func NewMDNSService(instance, service, domain, hostName string, port int, ips []
 		Port:         port,
 		IPs:          ips,
 		TXT:          txt,
-		serviceAddr:  fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain)),
-		instanceAddr: fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain)),
-		enumAddr:     fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)),
+		TTL:          defaultTTL,
+		serviceAddr:  EncodeServiceAddr(service, domain),
+		instanceAddr: EncodeInstanceAddr(instance, service, domain),
+		enumAddr:     EncodeEnumAddr(domain),
 	}, nil
 }
 
@@ -162,7 +164,7 @@ func (m *MDNSService) serviceEnum(q dns.Question) []dns.RR {
 				Name:   q.Name,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Ttl:    m.TTL,
 			},
 			Ptr: m.serviceAddr,
 		}
@@ -184,7 +186,7 @@ func (m *MDNSService) serviceRecords(q dns.Question) []dns.RR {
 				Name:   q.Name,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Ttl:    m.TTL,
 			},
 			Ptr: m.instanceAddr,
 		}
@@ -229,7 +231,7 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 						Name:   m.HostName,
 						Rrtype: dns.TypeA,
 						Class:  dns.ClassINET,
-						Ttl:    defaultTTL,
+						Ttl:    m.TTL,
 					},
 					A: ip4,
 				})
@@ -254,7 +256,7 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 						Name:   m.HostName,
 						Rrtype: dns.TypeAAAA,
 						Class:  dns.ClassINET,
-						Ttl:    defaultTTL,
+						Ttl:    m.TTL,
 					},
 					AAAA: ip16,
 				})
@@ -269,7 +271,7 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 				Name:   q.Name,
 				Rrtype: dns.TypeSRV,
 				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Ttl:    m.TTL,
 			},
 			Priority: 10,
 			Weight:   1,
@@ -297,7 +299,7 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 				Name:   q.Name,
 				Rrtype: dns.TypeTXT,
 				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Ttl:    m.TTL,
 			},
 			Txt: m.TXT,
 		}
@@ -305,3 +307,21 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 	}
 	return nil
 }
+
+func EncodeServiceAddr(service string, domain string) string {
+	return fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain))
+}
+
+func EncodeInstanceAddr(instance string, service string, domain string) string {
+	return fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain))
+}
+
+func EncodeEnumAddr(domain string) string {
+	return fmt.Sprintf("%s%s.", AllServiceName, trimDot(domain))
+}
+
+func DecodeQueryName(name string) (string,string,string) {
+	strArray := strings.Split(name, ".")
+	return strArray[0],strArray[1],strArray[2]
+}
+
